@@ -57,8 +57,20 @@ function actuatorCmd = ctrl_coordinator(latCmd, lonCmd, verCmd, vx, VEH, CTRL, L
     %% 3) ESC yaw moment allocation
     if isfield(latCmd, 'yawMoment') && abs(latCmd.yawMoment) > 0
         ratio_f = 0.5;
-        Mz_f = latCmd.yawMoment * ratio_f;
-        Mz_r = latCmd.yawMoment * (1 - ratio_f);
+        yawMoment = max(-1500, min(1500, latCmd.yawMoment));
+        % 기존 differential 배분이 음수 휠 토크를 만들면 전체 브레이크가 급격히 감소하므로,
+        % 가능한 yaw moment를 현재 longitudinal base 브레이크 한도 안으로 제한한다.
+        maxMz_f = 2 * brakeFR * (VEH.track_f / 2);
+        minMz_f = -2 * brakeFL * (VEH.track_f / 2);
+        maxMz_r = 2 * brakeRR * (VEH.track_r / 2);
+        minMz_r = -2 * brakeRL * (VEH.track_r / 2);
+        if yawMoment >= 0
+            yawMoment = min(yawMoment, min(maxMz_f/ratio_f, maxMz_r/(1-ratio_f)));
+        else
+            yawMoment = max(yawMoment, max(minMz_f/ratio_f, minMz_r/(1-ratio_f)));
+        end
+        Mz_f = yawMoment * ratio_f;
+        Mz_r = yawMoment * (1 - ratio_f);
         delta_f = Mz_f / max(VEH.track_f / 2, eps);
         delta_r = Mz_r / max(VEH.track_r / 2, eps);
         brakeFL = brakeFL + delta_f / 2;
@@ -68,7 +80,7 @@ function actuatorCmd = ctrl_coordinator(latCmd, lonCmd, verCmd, vx, VEH, CTRL, L
     end
 
     brakeTorque = [brakeFL; brakeFR; brakeRL; brakeRR];
-    brakeTorque = max(0, min(LIM.MAX_BRAKE_TRQ, brakeTorque));
+    brakeTorque = max(-LIM.MAX_BRAKE_TRQ, min(LIM.MAX_BRAKE_TRQ, brakeTorque));
 
     actuatorCmd.brakeTorque = brakeTorque;
     actuatorCmd.dampingCoeff = min(max(verCmd(:), CTRL.VER.cMin), CTRL.VER.cMax);

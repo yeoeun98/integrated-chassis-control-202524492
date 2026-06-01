@@ -7,7 +7,16 @@ CM_INSTALL_DIR = 'C:/IPG/carmaker/win64-13.0';
 
 % CarMaker 프로젝트 디렉토리
 CM_PROJECT_DIR = fullfile(fileparts(mfilename('fullpath')), '..', 'carmaker_project');
-CM_PROJECT_DIR = char(java.io.File(CM_PROJECT_DIR).getCanonicalPath());
+% canonical path via Java if available; otherwise use the raw path
+try
+    if usejava('jvm') && exist('java.io.File','class')
+        CM_PROJECT_DIR = char(java.io.File(CM_PROJECT_DIR).getCanonicalPath());
+    else
+        warning('[carmaker_paths] Java JVM not available; using non-canonical path.');
+    end
+catch ME
+    warning('[carmaker_paths] Failed to canonicalize path via Java: %s', ME.message);
+end
 
 % CarMaker 실행 파일
 CM_EXE = fullfile(CM_INSTALL_DIR, 'bin', 'CM.exe');

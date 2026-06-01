@@ -44,25 +44,27 @@ function [deltaAdd, ctrlState] = ctrl_lateral(yawRateRef, yawRate, slipAngle, vx
     %% 1) yaw rate error and speed scheduling
     yawErr = yawRateRef - yawRate;
     vx_safe = max(vx, 0.1);
-    gainScale = 1 + 0.7 * exp(-vx_safe / 10);    % 저속에서 좀 더 강하게, 고속에서 완화
-    Kp = CTRL.LAT.Kp * gainScale;
-    Ki = CTRL.LAT.Ki;
-    Kd = CTRL.LAT.Kd;
+    gainScale = 1 + 0.2 * exp(-vx_safe / 12);   % 저속에서 더 강하지만 고속에선 안정화
+    Kp = CTRL.LAT.Kp * gainScale * 1.2;
+    Ki = 0;                                     % 경로 추종은 driver가 주도하므로 적분 제거
+    Kd = CTRL.LAT.Kd * 0.5;                    % yaw disturbance damping
 
     %% 2) PID control with anti-windup
     ctrlState.intError = ctrlState.intError + yawErr * dt;
     ctrlState.intError = max(-CTRL.LAT.intMax, min(CTRL.LAT.intMax, ctrlState.intError));
     dError = (yawErr - ctrlState.prevError) / max(dt, eps);
-    steerCmd = Kp * yawErr + Ki * ctrlState.intError + Kd * dError;
+    steerCmd = Kp * yawErr + Kd * dError;
+    steerCmd = max(-deg2rad(1.2), min(deg2rad(1.2), steerCmd));
 
     %% 3) slip angle 기반 ESC yaw moment
-    beta_th = min(LIM.MAX_SLIP_ANGLE, deg2rad(2.5));
+    beta_th = min(LIM.MAX_SLIP_ANGLE, deg2rad(3.0 + min(vx_safe / 20, 1.0) * 1.5));
     yawMoment = 0;
     if abs(slipAngle) > beta_th
-        Kbeta = 7000;                         % slip limit gain
-        speedFactor = min(max(vx_safe / 15, 0.3), 2);
+        Kbeta = 450;
+        speedFactor = min(max(vx_safe / 15, 0.2), 1.0);
         yawMoment = -Kbeta * sign(slipAngle) * (abs(slipAngle) - beta_th) * speedFactor;
     end
+    yawMoment = max(-1000, min(1000, yawMoment));
 
     %% 4) output saturation
     deltaAdd.steerAngle = max(-LIM.MAX_STEER_ANGLE, min(LIM.MAX_STEER_ANGLE, steerCmd));

@@ -51,8 +51,8 @@ CTRL.LAT.Kd     = 0.05;    % 미분 게인
 CTRL.LAT.intMax = 5.0;     % 적분 안티와인드업 한계 [rad]
 
 %% 제어기 파라미터 — 종방향 (Longitudinal)
-CTRL.LON.Kp     = 0.5;     % 비례 게인
-CTRL.LON.Ki     = 0.05;    % 적분 게인
+CTRL.LON.Kp     = 2.0;     % 비례 게인
+CTRL.LON.Ki     = 0.12;    % 적분 게인
 CTRL.LON.intMax = 2000;    % 적분 안티와인드업 한계 [Nm]
 
 %% 제어기 파라미터 — 수직 (Vertical / CDC)

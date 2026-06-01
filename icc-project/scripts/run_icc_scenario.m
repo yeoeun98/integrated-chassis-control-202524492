@@ -71,8 +71,10 @@ function [result, kpi] = run_icc_scenario(scenarioId, plantModel, varargin)
         log.tire.(wheels{w}).slipRatio = zeros(n,1);
         log.tire.(wheels{w}).slipAngle = zeros(n,1);
     end
+    prevSlipRatio = zeros(4,1);
 
     %% 시뮬레이션 루프
+    prev_vx = 0;
     pose = struct('x',0,'y',0,'psi',0);
     for k = 1:n
         tk = t(k);
@@ -89,13 +91,19 @@ function [result, kpi] = run_icc_scenario(scenarioId, plantModel, varargin)
         if isscalar(brk_scenario); brk_scenario = brk_scenario * ones(4,1); end
 
         % ----- 3. ICC controllers -----
+        if k == 1
+            ax_now = 0;
+        else
+            ax_now = (vx_now - prev_vx) / dt;
+        end
         yawRateRef = calc_ref_yaw_rate(vx_now, delta_driver, VEH);
         if ctrlOn
             [latCmd, ctrlState_lat] = ctrl_lateral(yawRateRef, yawRate_now, beta_now, ...
                                                   vx_now, ctrlState_lat, CTRL, LIM, dt);
-            % CTRL_COORDINATOR — yaw moment → 차동 brake torque
+            brakeActive = any(brk_scenario > 0);
+            lonCmd = ctrl_longitudinal(scenario.vx0, vx_now, ax_now, brakeActive, prevSlipRatio, ctrlState_lon, CTRL, LIM, dt);
             verCmd = 1500 * ones(4,1);                                 % passive baseline
-            lonCmd = struct('Fx_total', 0, 'brakeRatio', 0);           % open-loop brake 사용
+            % CTRL_COORDINATOR — yaw moment + longitudinal demand → 차동 brake torque
             actAdd = ctrl_coordinator(latCmd, lonCmd, verCmd, vx_now, VEH, CTRL, LIM);
             delta_AFS  = actAdd.steerAngle;
             brakeESC   = actAdd.brakeTorque;                           % 차동 part
@@ -104,13 +112,19 @@ function [result, kpi] = run_icc_scenario(scenarioId, plantModel, varargin)
             delta_AFS = 0;
             brakeESC  = zeros(4,1);
             dampCoeff = 1500 * ones(4,1);
+            lonCmd = struct('Fx_total', 0, 'brakeRatio', 0, 'brakeOffset', zeros(4,1));
         end
 
         % ----- 4. Final actuator command -----
         steer_total = delta_driver + delta_AFS;
         steer_total = max(-LIM.MAX_STEER_ANGLE, min(LIM.MAX_STEER_ANGLE, steer_total));
         brake_total = brk_scenario + brakeESC;
+        if isfield(lonCmd, 'brakeOffset')
+            brake_total = brake_total + lonCmd.brakeOffset;
+        end
         brake_total = max(0, min(LIM.MAX_BRAKE_TRQ, brake_total));
+
+        prev_vx = vx_now;
 
         actCmd.steerAngle    = 0;                                     % steer는 별도 인가
         actCmd.brakeTorque   = brake_total;
@@ -146,6 +160,7 @@ function [result, kpi] = run_icc_scenario(scenarioId, plantModel, varargin)
             log.tire.(wn).slipRatio(k) = out.tire.(wn).slipRatio;
             log.tire.(wn).slipAngle(k) = out.tire.(wn).slipAngle;
         end
+        prevSlipRatio = [out.tire.FL.slipRatio; out.tire.FR.slipRatio; out.tire.RL.slipRatio; out.tire.RR.slipRatio];
 
         % ----- 8. Pose 적분 (driver model이 다음 step에 사용) -----
         if k > 1

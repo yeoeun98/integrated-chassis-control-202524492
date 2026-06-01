@@ -1,4 +1,4 @@
-function [forceCmd, ctrlState] = ctrl_longitudinal(vxRef, vx, ax, ctrlState, CTRL, LIM, dt)
+function [forceCmd, ctrlState] = ctrl_longitudinal(vxRef, vx, ax, brakeActive, prevSlipRatio, ctrlState, CTRL, LIM, dt)
 %CTRL_LONGITUDINAL [학생 작성] 종방향 제어기 (속도 추종 + ABS)
 %
 %   속도 추종 (cruise/decel) 과 anti-lock braking (slip ratio limiting) 을 통합.
@@ -7,6 +7,8 @@ function [forceCmd, ctrlState] = ctrl_longitudinal(vxRef, vx, ax, ctrlState, CTR
 %       vxRef     - 목표 종방향 속도 [m/s]
 %       vx        - 실제 종방향 속도 [m/s]
 %       ax        - 종가속도 [m/s²]
+%       brakeActive - 시나리오가 브레이크를 강제하는 중인지 여부 (true/false)
+%       prevSlipRatio - 이전 스텝 휠별 slip ratio [4x1]
 %       ctrlState - 내부 상태 (.intError, .prevForce, .wheelSlip(4) 추가 가능)
 %       CTRL      - .LON.Kp, .Ki, .intMax
 %       LIM       - .MAX_AX, .MAX_JERK, .MAX_BRAKE_TRQ
@@ -40,25 +42,54 @@ function [forceCmd, ctrlState] = ctrl_longitudinal(vxRef, vx, ax, ctrlState, CTR
 
     %% 1) speed tracking PI
     speedErr = vxRef - vx;
-    ctrlState.intError = ctrlState.intError + speedErr * dt;
-    ctrlState.intError = max(-CTRL.LON.intMax, min(CTRL.LON.intMax, ctrlState.intError));
+    if brakeActive
+        % 브레이크 중에는 속도 유지 명령으로 제어기의 가속 개입을 막는다.
+        speedErr = 0;
+        ctrlState.intError = 0;
+    else
+        ctrlState.intError = ctrlState.intError + speedErr * dt;
+        ctrlState.intError = max(-CTRL.LON.intMax, min(CTRL.LON.intMax, ctrlState.intError));
+    end
 
     Fx_cmd = CTRL.LON.Kp * speedErr + CTRL.LON.Ki * ctrlState.intError;
 
     %% 2) ABS-like braking modulation (deceleration 시 slip 가능성 감소)
-    if Fx_cmd < 0 && ax < -0.5
-        brakeReduction = 0.5 + 0.3 * exp(-abs(ax) / 2);
+    if brakeActive
+        % 제동 상황에선 속도 개입을 막고 slip을 기반으로 ABS-like 토크 조정만 수행
+        Fx_cmd = min(0, Fx_cmd);
+        if ax < -0.5
+            brakeReduction = 0.85 + 0.15 * exp(-abs(ax) / 4);
+            Fx_cmd = Fx_cmd * brakeReduction;
+        end
+    elseif Fx_cmd < 0 && ax < -0.5
+        brakeReduction = 0.75 + 0.15 * exp(-abs(ax) / 3);
         Fx_cmd = Fx_cmd * brakeReduction;
     end
 
     %% 3) jerk limit (approximate mass 1500 kg)
     mass = 1500;
-    maxDeltaF = LIM.MAX_JERK * mass * dt;
+    maxDeltaF = 3 * LIM.MAX_JERK * mass * dt;   % 더 빠른 brake torque ramp-up 허용
     Fx_cmd = max(ctrlState.prevForce - maxDeltaF, min(ctrlState.prevForce + maxDeltaF, Fx_cmd));
 
-    %% 4) output normalisation
+    %% 4) wheel-slip 기반 ABS offset
+    forceCmd.brakeOffset = zeros(4,1);
+    if brakeActive && nargin >= 6 && ~isempty(prevSlipRatio)
+        slipLimit = 0.12;
+        slipExcess = max(abs(prevSlipRatio) - slipLimit, 0);
+        if any(slipExcess > 0) && ax < -0.2
+            % 휠별 slip이 과도할 때만 해당 휠의 제동 토크를 줄인다.
+            scale = min(0.20, max(0.05, max(slipExcess) / 0.30));
+            brakeShare = slipExcess ./ max(slipExcess, eps);
+            forceCmd.brakeOffset = -scale * LIM.MAX_BRAKE_TRQ * brakeShare;
+        end
+    end
+
+    %% 5) output normalisation
     maxForce = mass * LIM.MAX_AX;
     Fx_cmd = max(-maxForce, min(maxForce, Fx_cmd));
+    if Fx_cmd < -0.9 * maxForce
+        Fx_cmd = -0.9 * maxForce;
+    end
     if Fx_cmd < 0
         forceCmd.brakeRatio = min(1, max(0, -Fx_cmd / maxForce));
     else

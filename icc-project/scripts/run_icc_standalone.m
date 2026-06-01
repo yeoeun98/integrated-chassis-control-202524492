@@ -96,7 +96,7 @@ for k = 1:n
 
     %% 종방향 제어
     [lonCmd, lonState] = ctrl_longitudinal(vxRef, plantOut.vx, plantOut.ax, ...
-                                            lonState, CTRL, LIM, dt);
+                                            false, zeros(4,1), lonState, CTRL, LIM, dt);
 
     %% 수직 제어
     verCmd = ctrl_vertical(plantOut.suspVel, plantOut.bodyVel, ...
