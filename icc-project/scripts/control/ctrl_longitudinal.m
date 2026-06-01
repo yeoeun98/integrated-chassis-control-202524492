@@ -51,20 +51,26 @@ function [forceCmd, ctrlState] = ctrl_longitudinal(vxRef, vx, ax, brakeActive, p
         ctrlState.intError = max(-CTRL.LON.intMax, min(CTRL.LON.intMax, ctrlState.intError));
     end
 
-    Fx_cmd = CTRL.LON.Kp * speedErr + CTRL.LON.Ki * ctrlState.intError;
-
-    %% 2) ABS-like braking modulation (deceleration 시 slip 가능성 감소)
-    if brakeActive
-        % 제동 상황에선 속도 개입을 막고 slip을 기반으로 ABS-like 토크 조정만 수행
-        Fx_cmd = min(0, Fx_cmd);
-        if ax < -0.5
-            brakeReduction = 0.85 + 0.15 * exp(-abs(ax) / 4);
-            Fx_cmd = Fx_cmd * brakeReduction;
+        if brakeActive
+            % 브레이크 상황에서 open-loop 제동력을 넘는 전체 감속 목표를 설정
+            mass = 1500;
+            g = 9.81;
+            targetDecel = -min(0.9 * g, LIM.MAX_AX);   % 최대 안전 제동가속도
+            Fx_cmd = mass * targetDecel;
+            if vx < 1.0
+                Fx_cmd = 0;
+            end
+            % 이미 충분히 감속 중이면 제동 토크를 조금 줄여 안정화
+            if ax < 1.2 * targetDecel
+                Fx_cmd = Fx_cmd * 0.8;
+            end
+        else
+            Fx_cmd = CTRL.LON.Kp * speedErr + CTRL.LON.Ki * ctrlState.intError;
+            if Fx_cmd < 0 && ax < -0.5
+                brakeReduction = 0.75 + 0.15 * exp(-abs(ax) / 3);
+                Fx_cmd = Fx_cmd * brakeReduction;
+            end
         end
-    elseif Fx_cmd < 0 && ax < -0.5
-        brakeReduction = 0.75 + 0.15 * exp(-abs(ax) / 3);
-        Fx_cmd = Fx_cmd * brakeReduction;
-    end
 
     %% 3) jerk limit (approximate mass 1500 kg)
     mass = 1500;
