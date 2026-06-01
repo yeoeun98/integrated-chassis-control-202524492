@@ -41,28 +41,47 @@ function [deltaAdd, ctrlState] = ctrl_lateral(yawRateRef, yawRate, slipAngle, vx
     if ~isfield(ctrlState, 'intError'); ctrlState.intError = 0; end
     if ~isfield(ctrlState, 'prevError'); ctrlState.prevError = 0; end
 
-    %% 1) yaw rate error and speed scheduling
-    yawErr = yawRateRef - yawRate;
+    %% 1) yaw rate error and speed scheduling (conservative, assist-only)
+    yawErr = yawRateRef - yawRate;   % [rad/s]
     vx_safe = max(vx, 0.1);
-    gainScale = 1 + 0.3 * exp(-vx_safe / 10);   % 저속에서 더 강하고 고속에선 일정
-    Kp = CTRL.LAT.Kp * gainScale * 1.8;
-    Ki = 0;                                     % 경로 추종은 driver가 주도하므로 적분 제거
-    Kd = CTRL.LAT.Kd * 0.8;                    % yaw disturbance damping
+    % gain scheduling: weaker than before, lateral should be assistive
+    gainScale = 1 + 0.15 * exp(-vx_safe / 10);
+    Kp = CTRL.LAT.Kp * gainScale * 0.7;
+    Ki = 0;                                     % integral removed (avoid windup)
+    Kd = CTRL.LAT.Kd * 0.4;                     % lighter derivative
 
-    %% 2) PID control with anti-windup
-    ctrlState.intError = ctrlState.intError + yawErr * dt;
-    ctrlState.intError = max(-CTRL.LAT.intMax, min(CTRL.LAT.intMax, ctrlState.intError));
-    dError = (yawErr - ctrlState.prevError) / max(dt, eps);
-    steerCmd = Kp * yawErr + Kd * dError;
-    steerCmd = max(-deg2rad(4.0), min(deg2rad(4.0), steerCmd));
+    % small-deadband so small tracking errors do not trigger AFS
+    yawDeadband = deg2rad(0.5);    % rad/s-equivalent small deadband
+    slipDeadband = deg2rad(0.8);   % small slip angle below which we don't intervene
+
+    %% 2) Assistive PID with derivative filtering and deadband
+    % initialize derivative filter state
+    if ~isfield(ctrlState, 'dFilt'); ctrlState.dFilt = 0; end
+    % derivative raw
+    dRaw = (yawErr - ctrlState.prevError) / max(dt, eps);
+    % low-pass filter on derivative to avoid kick
+    alpha = 0.7; % smoothing (higher -> more smoothing)
+    ctrlState.dFilt = alpha * ctrlState.dFilt + (1-alpha) * dRaw;
+
+    % if error and slip are both small, do not apply steering assist
+    if abs(yawErr) < yawDeadband && abs(slipAngle) < slipDeadband
+        steerCmd = 0;
+    else
+        steerCmd = Kp * yawErr + Kd * ctrlState.dFilt;
+    end
+    % soften steering limits (assist only)
+    steerCmd = max(-deg2rad(2.0), min(deg2rad(2.0), steerCmd));
 
     %% 3) slip angle 기반 ESC yaw moment
+    % ESC yaw moment only when slip is meaningfully beyond threshold
     beta_th = min(LIM.MAX_SLIP_ANGLE, deg2rad(4.0 + min(vx_safe / 20, 1.0) * 1.0));
     yawMoment = 0;
     if abs(slipAngle) > beta_th
         Kbeta = 550;
         speedFactor = min(max(vx_safe / 15, 0.2), 1.0);
         yawMoment = -Kbeta * sign(slipAngle) * (abs(slipAngle) - beta_th) * speedFactor;
+    else
+        yawMoment = 0;
     end
     yawMoment = max(-1000, min(1000, yawMoment));
 

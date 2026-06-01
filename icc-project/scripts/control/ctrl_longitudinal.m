@@ -52,22 +52,20 @@ function [forceCmd, ctrlState] = ctrl_longitudinal(vxRef, vx, ax, brakeActive, p
     end
 
         if brakeActive
-            % 브레이크 상황에서 open-loop 제동력을 넘는 전체 감속 목표를 설정
+            % 브레이크 상황: 가능한 최대 안전 감속을 적극 활용
             mass = 1500;
             g = 9.81;
-            targetDecel = -min(0.9 * g, LIM.MAX_AX);   % 최대 안전 제동가속도
+            targetDecel = -min(0.95 * g, LIM.MAX_AX);   % 최대 안전 제동가속도 (보수적)
             Fx_cmd = mass * targetDecel;
             if vx < 1.0
                 Fx_cmd = 0;
             end
-            % 이미 충분히 감속 중이면 제동 토크를 조금 줄여 안정화
-            if ax < 1.2 * targetDecel
-                Fx_cmd = Fx_cmd * 0.8;
-            end
+            % do NOT aggressively reduce Fx_cmd here; let coordinator/ABS modulate per-wheel
         else
             Fx_cmd = CTRL.LON.Kp * speedErr + CTRL.LON.Ki * ctrlState.intError;
+            % small braking smoothing only when significant decel happening
             if Fx_cmd < 0 && ax < -0.5
-                brakeReduction = 0.75 + 0.15 * exp(-abs(ax) / 3);
+                brakeReduction = 0.90 + 0.05 * exp(-abs(ax) / 3);
                 Fx_cmd = Fx_cmd * brakeReduction;
             end
         end
@@ -77,25 +75,25 @@ function [forceCmd, ctrlState] = ctrl_longitudinal(vxRef, vx, ax, brakeActive, p
     maxDeltaF = 3 * LIM.MAX_JERK * mass * dt;   % 더 빠른 brake torque ramp-up 허용
     Fx_cmd = max(ctrlState.prevForce - maxDeltaF, min(ctrlState.prevForce + maxDeltaF, Fx_cmd));
 
-    %% 4) wheel-slip 기반 ABS offset
+    %% 4) wheel-slip 기반 ABS offset (gentle per-wheel reduction)
     forceCmd.brakeOffset = zeros(4,1);
     if brakeActive && nargin >= 6 && ~isempty(prevSlipRatio)
         slipLimit = 0.12;
         slipExcess = max(abs(prevSlipRatio) - slipLimit, 0);
         if any(slipExcess > 0) && ax < -0.2
             % 휠별 slip이 과도할 때만 해당 휠의 제동 토크를 줄인다.
-            scale = min(0.20, max(0.05, max(slipExcess) / 0.30));
+            % make modulation milder to preserve stopping force
+            scale = min(0.25, max(0.03, max(slipExcess) / 0.30));
             brakeShare = slipExcess ./ max(slipExcess, eps);
-            forceCmd.brakeOffset = -scale * LIM.MAX_BRAKE_TRQ * brakeShare;
+            % smaller fraction of MAX_BRAKE_TRQ removed per-wheel
+            forceCmd.brakeOffset = -scale * 0.6 * LIM.MAX_BRAKE_TRQ * brakeShare;
         end
     end
 
     %% 5) output normalisation
     maxForce = mass * LIM.MAX_AX;
+    % allow using full available longitudinal force (don't artificially cap at -0.9)
     Fx_cmd = max(-maxForce, min(maxForce, Fx_cmd));
-    if Fx_cmd < -0.9 * maxForce
-        Fx_cmd = -0.9 * maxForce;
-    end
     if Fx_cmd < 0
         forceCmd.brakeRatio = min(1, max(0, -Fx_cmd / maxForce));
     else
